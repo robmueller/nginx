@@ -25,6 +25,9 @@ static void ngx_mail_proxy_block_read(ngx_event_t *rev);
 static void ngx_mail_proxy_pop3_handler(ngx_event_t *rev);
 static void ngx_mail_proxy_imap_handler(ngx_event_t *rev);
 static void ngx_mail_proxy_smtp_handler(ngx_event_t *rev);
+static void ngx_mail_proxy_xmpp_auth_fixup(ngx_mail_session_t *s);
+static void ngx_mail_proxy_xmpp_write_handler(ngx_event_t *rev);
+static void ngx_mail_proxy_xmpp_read_handler(ngx_event_t *rev);
 static void ngx_mail_proxy_dummy_handler(ngx_event_t *ev);
 static ngx_int_t ngx_mail_proxy_read_response(ngx_mail_session_t *s,
     ngx_uint_t state);
@@ -186,11 +189,28 @@ ngx_mail_proxy_init(ngx_mail_session_t *s, ngx_addr_t *peer)
         s->mail_state = ngx_imap_start;
         break;
 
+    case NGX_MAIL_XMPP_PROTOCOL:
+        ngx_mail_proxy_xmpp_auth_fixup(s);
+        p->upstream.connection->read->handler = ngx_mail_proxy_xmpp_read_handler;
+        p->upstream.connection->write->handler = ngx_mail_proxy_xmpp_write_handler;
+        s->mail_state = ngx_xmpp_start;
+        break;
+
     default: /* NGX_MAIL_SMTP_PROTOCOL */
         p->upstream.connection->read->handler = ngx_mail_proxy_smtp_handler;
         s->mail_state = ngx_smtp_start;
         break;
     }
+
+    if (s->protocol != NGX_MAIL_XMPP_PROTOCOL)
+        return;
+
+    /* XMPP client sends first */
+    if (rc == NGX_OK) {
+        ngx_mail_proxy_xmpp_write_handler(p->upstream.connection->write);
+        return;
+    }
+
 }
 
 
@@ -710,6 +730,209 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
 }
 
 
+static u_char xmpp_stream_header_stream[] =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<stream:stream version=\"1.0\" xmlns:stream=\"http://etherx.jabber.org/streams\" xmlns=\"jabber:client\" to=\"";
+static u_char xmpp_stream_header_stream_end[] =
+    "\">";
+static u_char xmpp_stream_header_auth[] =
+    "<auth mechanism=\"PLAIN\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\">";
+static u_char xmpp_stream_header_auth_end[] =
+    "</auth>";
+
+static void
+ngx_mail_proxy_xmpp_auth_fixup(ngx_mail_session_t *s)
+{
+    u_char *p, *last;
+
+    for (
+        p = s->login.data, last = p + s->login.len;
+        p < last;
+        p++) {
+
+        if (*p == '@') {
+            s->login.len = p - s->login.data;
+            *p++ = 0;
+            s->host.data = p;
+            s->host.len = last - p;
+            return;
+        }
+    }
+}
+
+static void
+ngx_mail_proxy_xmpp_write_handler(ngx_event_t *rev)
+{
+    u_char                 *p;
+    ngx_str_t               line;
+    ngx_str_t               plain, plainb64;
+    ngx_connection_t       *c;
+    ngx_mail_session_t     *s;
+    int                     len;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_MAIL, rev->log, 0,
+                   "mail proxy xmpp write auth handler");
+
+    c = rev->data;
+    s = c->data;
+
+    if (rev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT,
+                      "upstream timed out");
+        c->timedout = 1;
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+
+    switch (s->mail_state) {
+
+    case ngx_xmpp_start:
+        ngx_log_debug0(NGX_LOG_DEBUG_MAIL, rev->log, 0, "mail proxy xmpp stream start");
+
+        s->connection->log->action = "starting xmpp stream";
+
+        line.len = sizeof(xmpp_stream_header_stream) - 1
+                    + s->host.len
+                    + sizeof(xmpp_stream_header_stream_end) - 1;
+
+        line.data = ngx_pnalloc(c->pool, line.len);
+        if (line.data == NULL) {
+            ngx_mail_proxy_internal_server_error(s);
+            return;
+        }
+
+        p = ngx_cpymem(line.data, xmpp_stream_header_stream, sizeof(xmpp_stream_header_stream) - 1);
+        p = ngx_cpymem(p, s->host.data, s->host.len);
+        p = ngx_cpymem(p, xmpp_stream_header_stream_end, sizeof(xmpp_stream_header_stream_end) - 1);
+
+        s->mail_state = ngx_xmpp_stream;
+
+        break;
+
+    case ngx_xmpp_auth_plain:
+        ngx_log_debug0(NGX_LOG_DEBUG_MAIL, rev->log, 0, "mail proxy xmpp auth");
+
+        s->connection->log->action = "starting xmpp auth";
+
+        len = s->login.len + s->passwd.len + 2;
+
+        plainb64.data = ngx_pnalloc(c->pool, ngx_base64_encoded_length(s->login.len + s->passwd.len + 2) + 1);
+        if (plainb64.data == NULL) {
+            ngx_mail_proxy_internal_server_error(s);
+            return;
+        }
+
+        p = ngx_pnalloc(c->pool, len + 1);
+        if (p == NULL) {
+            ngx_mail_proxy_internal_server_error(s);
+            return;
+        }
+
+        plain.data = p;
+        plain.len = len;
+
+        *p++ = '\0';
+        p = ngx_cpymem(p, s->login.data, s->login.len);
+        *p++ = '\0';
+        p = ngx_cpymem(p, s->passwd.data, s->passwd.len);
+
+        ngx_encode_base64(&plainb64, &plain);
+
+        line.len = sizeof(xmpp_stream_header_auth) - 1
+                    + plainb64.len
+                    + sizeof(xmpp_stream_header_auth_end) - 1;
+
+        line.data = ngx_pnalloc(c->pool, line.len);
+        if (line.data == NULL) {
+            ngx_mail_proxy_internal_server_error(s);
+            return;
+        }
+
+        p = ngx_cpymem(line.data, xmpp_stream_header_auth, sizeof(xmpp_stream_header_auth) - 1);
+        p = ngx_cpymem(p, plainb64.data, plainb64.len);
+        p = ngx_cpymem(p, xmpp_stream_header_auth_end, sizeof(xmpp_stream_header_auth_end) - 1);
+
+        s->mail_state = ngx_xmpp_auth_plain;
+
+        break;
+
+    default:
+#if (NGX_SUPPRESS_WARN)
+        ngx_str_null(&line);
+#endif
+        break;
+    }
+
+    if (c->send(c, line.data, line.len) < (ssize_t) line.len) {
+        ngx_close_connection(c);
+        ngx_destroy_pool(c->pool);
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+}
+
+static void
+ngx_mail_proxy_xmpp_read_handler(ngx_event_t *rev)
+{
+    ngx_int_t               rc;
+    ngx_connection_t       *c;
+    ngx_mail_session_t     *s;
+    ngx_mail_proxy_conf_t  *pcf;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_MAIL, rev->log, 0,
+                   "mail proxy xmpp auth handler");
+
+    c = rev->data;
+    s = c->data;
+
+    if (rev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT,
+                      "upstream timed out");
+        c->timedout = 1;
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+
+    rc = ngx_mail_proxy_read_response(s, s->mail_state);
+
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
+    if (rc == NGX_ERROR) {
+        ngx_mail_proxy_upstream_error(s);
+        return;
+    }
+
+    switch (s->mail_state) {
+
+    case ngx_xmpp_stream:
+        s->mail_state = ngx_xmpp_auth_plain;
+        break;
+
+    case ngx_xmpp_auth_plain:
+        s->connection->read->handler = ngx_mail_proxy_handler;
+        s->connection->write->handler = ngx_mail_proxy_handler;
+        rev->handler = ngx_mail_proxy_handler;
+        c->write->handler = ngx_mail_proxy_handler;
+
+        pcf = ngx_mail_get_module_srv_conf(s, ngx_mail_proxy_module);
+        ngx_add_timer(s->connection->read, pcf->timeout);
+        ngx_del_timer(c->read);
+
+        c->log->action = NULL;
+        ngx_log_error(NGX_LOG_INFO, c->log, 0, "client logged in");
+
+        ngx_mail_proxy_handler(s->connection->write);
+
+        break;
+    }
+
+    s->proxy->buffer->pos = s->proxy->buffer->start;
+    s->proxy->buffer->last = s->proxy->buffer->start;
+}
+
+
 static void
 ngx_mail_proxy_dummy_handler(ngx_event_t *wev)
 {
@@ -756,16 +979,18 @@ ngx_mail_proxy_read_response(ngx_mail_session_t *s, ngx_uint_t state)
         return NGX_AGAIN;
     }
 
-    if (*(b->last - 2) != CR || *(b->last - 1) != LF) {
-        if (b->last == b->end) {
-            *(b->last - 1) = '\0';
-            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
-                          "upstream sent too long response line: \"%s\"",
-                          b->pos);
-            return NGX_ERROR;
-        }
+    if (s->protocol != NGX_MAIL_XMPP_PROTOCOL) {
+        if (*(b->last - 2) != CR || *(b->last - 1) != LF) {
+            if (b->last == b->end) {
+                *(b->last - 1) = '\0';
+                ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                            "upstream sent too long response line: \"%s\"",
+                            b->pos);
+                return NGX_ERROR;
+            }
 
-        return NGX_AGAIN;
+            return NGX_AGAIN;
+        }
     }
 
     p = b->pos;
@@ -802,6 +1027,89 @@ ngx_mail_proxy_read_response(ngx_mail_session_t *s, ngx_uint_t state)
                 }
             }
             break;
+        }
+
+        break;
+
+    case NGX_MAIL_XMPP_PROTOCOL:
+        switch (state) {
+
+        case ngx_xmpp_stream:
+
+            while (p < b->last) {
+                if (b->last - p < 18) {
+                    b->pos = p;
+                    return NGX_AGAIN;
+                }
+
+                if (p[0]  == '<' &&
+                    p[1]  == '/' &&
+                    p[2]  == 's' &&
+                    p[3]  == 't' &&
+                    p[4]  == 'r' &&
+                    p[5]  == 'e' &&
+                    p[6]  == 'a' &&
+                    p[7]  == 'm' &&
+                    p[8]  == ':' &&
+                    p[9]  == 'f' &&
+                    p[10] == 'e' &&
+                    p[11] == 'a' &&
+                    p[12] == 't' &&
+                    p[13] == 'u' &&
+                    p[14] == 'r' &&
+                    p[15] == 'e' &&
+                    p[16] == 's' &&
+                    p[17] == '>') {
+                        b->pos = p;
+                        return NGX_OK;
+                }
+
+                p++;
+            }
+
+            b->pos = p;
+            return NGX_AGAIN;
+
+        case ngx_xmpp_auth_plain:
+
+            while (p < b->last) {
+                if (b->last - p < 8) {
+                    b->pos = p;
+                    return NGX_AGAIN;
+                }
+
+                if (p[0] == '<') {
+                    if (p[1] == 's' &&
+                        p[2] == 'u' &&
+                        p[3] == 'c' &&
+                        p[4] == 'c' &&
+                        p[5] == 'e' &&
+                        p[6] == 's' &&
+                        p[7] == 's') {
+                            b->pos = p;
+                            return NGX_OK;
+                    }
+
+                    if (p[1] == 'f' &&
+                        p[2] == 'a' &&
+                        p[3] == 'i' &&
+                        p[4] == 'l' &&
+                        p[5] == 'u' &&
+                        p[6] == 'r' &&
+                        p[7] == 'e') {
+                            b->pos = p;
+                            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                                        "upstream auth failed: \"%s\"",
+                                        b->pos);
+                            return NGX_ERROR;
+                    }
+                }
+
+                p++;
+            }
+
+            b->pos = p;
+            return NGX_AGAIN;
         }
 
         break;
