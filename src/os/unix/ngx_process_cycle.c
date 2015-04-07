@@ -53,7 +53,7 @@ ngx_uint_t    ngx_noaccepting;
 ngx_uint_t    ngx_restart;
 
 
-static u_char  master_process[] = "master process";
+static char  master_process[] = "master process";
 
 
 static ngx_cache_manager_ctx_t  ngx_cache_manager_ctx = {
@@ -69,14 +69,41 @@ static ngx_cycle_t      ngx_exit_cycle;
 static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
+void
+ngx_set_title(ngx_cycle_t *cycle, char *type)
+{
+    ngx_int_t   i;
+    char        *title;
+    u_char      *p;
+    size_t      size;
+
+    size = ngx_strlen(type);
+
+    for (i = 0; i < ngx_argc; i++) {
+        size += ngx_strlen(ngx_argv[i]) + 1;
+    }
+
+    title = ngx_pnalloc(cycle->pool, size);
+    if (title == NULL) {
+        /* fatal */
+        exit(2);
+    }
+
+    p = ngx_cpystrn((u_char *) title, (u_char *) type, size);
+
+    for (i = 0; i < ngx_argc; i++) {
+        *p++ = ' ';
+        p = ngx_cpystrn(p, (u_char *) ngx_argv[i], size);
+    }
+
+    ngx_setproctitle(title);
+}
+
+
 
 void
 ngx_master_process_cycle(ngx_cycle_t *cycle)
 {
-    char              *title;
-    u_char            *p;
-    size_t             size;
-    ngx_int_t          i;
     ngx_uint_t         n, sigio;
     sigset_t           set;
     struct itimerval   itv;
@@ -104,27 +131,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
     sigemptyset(&set);
 
-
-    size = sizeof(master_process);
-
-    for (i = 0; i < ngx_argc; i++) {
-        size += ngx_strlen(ngx_argv[i]) + 1;
-    }
-
-    title = ngx_pnalloc(cycle->pool, size);
-    if (title == NULL) {
-        /* fatal */
-        exit(2);
-    }
-
-    p = ngx_cpymem(title, master_process, sizeof(master_process) - 1);
-    for (i = 0; i < ngx_argc; i++) {
-        *p++ = ' ';
-        p = ngx_cpystrn(p, (u_char *) ngx_argv[i], size);
-    }
-
-    ngx_setproctitle(title);
-
+    ngx_set_title(cycle, master_process);
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
@@ -734,7 +741,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
     ngx_worker_process_init(cycle, worker);
 
-    ngx_setproctitle("worker process");
+    ngx_set_title(cycle, "worker process");
 
     for ( ;; ) {
 
@@ -758,7 +765,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
             ngx_quit = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                           "gracefully shutting down");
-            ngx_setproctitle("worker process is shutting down");
+            ngx_set_title(cycle, "worker process is shutting down");
 
             if (!ngx_exiting) {
                 ngx_exiting = 1;
