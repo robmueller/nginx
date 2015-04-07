@@ -2485,7 +2485,7 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         r->request_complete = 1;
     }
 
-    if (ngx_http_post_action(r) == NGX_OK) {
+    if ((r->headers_out.status == NGX_HTTP_OK || r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT) && ngx_http_post_action(r) == NGX_OK) {
         return;
     }
 
