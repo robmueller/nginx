@@ -146,7 +146,7 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     u_char                    *p, *auth, *last;
     size_t                     size;
     ngx_str_t                 *c;
-    ngx_uint_t                 i, m, auth_enabled;
+    ngx_uint_t                 i, m, auth_enabled, broken_sasl_clients;
     ngx_mail_core_srv_conf_t  *cscf;
 
     ngx_conf_merge_size_value(conf->client_buffer_size,
@@ -162,6 +162,8 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
                                |NGX_MAIL_AUTH_PLAIN_ENABLED
                                |NGX_MAIL_AUTH_LOGIN_ENABLED));
 
+    /* XXX - make this configurable later? */
+    broken_sasl_clients = 1;
 
     cscf = ngx_mail_conf_get_module_srv_conf(cf, ngx_mail_core_module);
 
@@ -214,12 +216,16 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     {
         if (m & conf->auth_methods) {
             size += 1 + ngx_mail_smtp_auth_methods_names[i].len;
+            if (broken_sasl_clients)
+                size += 1 + ngx_mail_smtp_auth_methods_names[i].len;
             auth_enabled = 1;
         }
     }
 
     if (auth_enabled) {
         size += sizeof("250 AUTH") - 1 + sizeof(CRLF) - 1;
+        if (broken_sasl_clients)
+            size += sizeof("250-AUTH") - 1 + sizeof(CRLF) - 1;
     }
 
     p = ngx_pnalloc(cf->pool, size);
@@ -248,7 +254,7 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     if (auth_enabled) {
         last = p;
 
-        *p++ = '2'; *p++ = '5'; *p++ = '0'; *p++ = ' ';
+        *p++ = '2'; *p++ = '5'; *p++ = '0'; *p++ = '-';
         *p++ = 'A'; *p++ = 'U'; *p++ = 'T'; *p++ = 'H';
 
         for (m = NGX_MAIL_AUTH_PLAIN_ENABLED, i = 0;
@@ -262,10 +268,32 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
             }
         }
 
-        *p++ = CR; *p = LF;
+        *p++ = CR; *p++ = LF;
+    }
 
-    } else {
-        last[3] = ' ';
+    /* output a duplicate line for broken SASL clients like
+     * early versions of Microsoft Outlook (+Express) */
+    if (broken_sasl_clients && auth_enabled) {
+        last = p;
+
+        *p++ = '2'; *p++ = '5'; *p++ = '0'; *p++ = '-';
+        *p++ = 'A'; *p++ = 'U'; *p++ = 'T'; *p++ = 'H';
+
+        for (m = NGX_MAIL_AUTH_PLAIN_ENABLED, i = 0;
+             m <= NGX_MAIL_AUTH_CRAM_MD5_ENABLED;
+             m <<= 1, i++)
+        {
+            if (m & conf->auth_methods) {
+                *p++ = ' ';
+                p = ngx_cpymem(p, ngx_mail_smtp_auth_methods_names[i].data,
+                               ngx_mail_smtp_auth_methods_names[i].len);
+            }
+        }
+
+        /* second auth response has '=' instead of the first space */
+	last[8] = '=';
+
+        *p++ = CR; *p++ = LF;
     }
 
     size += sizeof("250 STARTTLS" CRLF) - 1;
@@ -278,13 +306,14 @@ ngx_mail_smtp_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     conf->starttls_capability.len = size;
     conf->starttls_capability.data = p;
 
+    /* copy capibility string to add STARTTLS lines */
     p = ngx_cpymem(p, conf->capability.data, conf->capability.len);
 
     ngx_memcpy(p, "250 STARTTLS" CRLF, sizeof("250 STARTTLS" CRLF) - 1);
 
-    p = conf->starttls_capability.data
-        + (last - conf->capability.data) + 3;
-    *p = '-';
+    /* now that we've copied the original capability, make the last line
+     * end with '250 ', not a '250-' */
+    last[3] = ' ';
 
     size = (auth - conf->capability.data)
             + sizeof("250 STARTTLS" CRLF) - 1;
