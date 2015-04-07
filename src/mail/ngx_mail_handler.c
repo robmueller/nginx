@@ -244,6 +244,7 @@ ngx_mail_ssl_handshake_handler(ngx_connection_t *c)
 {
     ngx_mail_session_t        *s;
     ngx_mail_core_srv_conf_t  *cscf;
+    ngx_str_t                 ssl_protocol, ssl_cipher;
 
     if (c->ssl->handshaked) {
 
@@ -251,6 +252,14 @@ ngx_mail_ssl_handshake_handler(ngx_connection_t *c)
 
         if (ngx_mail_verify_cert(s, c) != NGX_OK) {
             return;
+        }
+
+        if (!ngx_ssl_get_protocol(c, c->pool, &ssl_protocol) &&
+            !ngx_ssl_get_cipher_name(c, c->pool, &ssl_cipher)) {
+
+            ngx_log_error(NGX_LOG_INFO, c->log, 0,
+                        "negotiated SSL protocol/cipher %s/%s",
+                        ssl_protocol.data, ssl_cipher.data);
         }
 
         if (s->starttls) {
