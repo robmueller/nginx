@@ -112,6 +112,7 @@ MAIL_SSL=NO
 MAIL_POP3=YES
 MAIL_IMAP=YES
 MAIL_SMTP=YES
+MAIL_XMPP=YES
 
 NGX_ADDONS=
 
@@ -272,6 +273,7 @@ use the \"--without-http_limit_conn_module\" option instead"
         --without-mail_pop3_module)      MAIL_POP3=NO               ;;
         --without-mail_imap_module)      MAIL_IMAP=NO               ;;
         --without-mail_smtp_module)      MAIL_SMTP=NO               ;;
+        --without-mail_xmpp_module)      MAIL_XMPP=NO               ;;
 
         --with-google_perftools_module)  NGX_GOOGLE_PERFTOOLS=YES   ;;
         --with-cpp_test_module)          NGX_CPP_TEST=YES           ;;
@@ -426,11 +428,12 @@ cat << END
   --without-http                     disable HTTP server
   --without-http-cache               disable HTTP cache
 
-  --with-mail                        enable POP3/IMAP4/SMTP proxy module
+  --with-mail                        enable POP3/IMAP4/SMTP/XMPP proxy module
   --with-mail_ssl_module             enable ngx_mail_ssl_module
   --without-mail_pop3_module         disable ngx_mail_pop3_module
   --without-mail_imap_module         disable ngx_mail_imap_module
   --without-mail_smtp_module         disable ngx_mail_smtp_module
+  --without-mail_xmpp_module         disable ngx_mail_xmpp_module
 
   --with-google_perftools_module     enable ngx_google_perftools_module
   --with-cpp_test_module             enable ngx_cpp_test_module
