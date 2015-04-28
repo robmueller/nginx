@@ -12,6 +12,7 @@
 #include <ngx_mail_pop3_module.h>
 #include <ngx_mail_imap_module.h>
 #include <ngx_mail_smtp_module.h>
+#include <ngx_mail_xmpp_module.h>
 
 
 ngx_int_t
@@ -852,6 +853,275 @@ invalid:
     }
 
     s->buffer->pos = p;
+
+    return NGX_MAIL_PARSE_INVALID_COMMAND;
+}
+
+
+ngx_int_t
+ngx_mail_xmpp_parse_command(ngx_mail_session_t *s)
+{
+    u_char      ch, *p, *c;
+    ngx_str_t  *arg;
+    enum {
+        sw_start = 0,
+        sw_elem_start,
+        sw_elem,
+        sw_whitspace_between_attrs,
+        sw_attr_name,
+        sw_attr_value_quote_start,
+        sw_attr_value,
+        sw_cdata_start,
+        sw_cdata
+    } state;
+
+    state = s->state;
+
+    for (p = s->buffer->pos; p < s->buffer->last; p++) {
+        ch = *p;
+
+        switch (state) {
+
+        case sw_start:
+            switch (ch) {
+            case '<':
+                state = sw_elem_start;
+                break;
+            }
+            break;
+
+        case sw_elem_start:
+            s->literal_len = 0;
+
+            switch (ch) {
+            case ' ': case CR: case LF:
+                break;
+            default:
+                s->cmd_start = p;
+                state = sw_elem;
+                break;
+            }
+            break;
+
+        case sw_elem:
+            if (ch == ':') {
+                state = sw_elem_start;
+                break;
+            }
+
+            if (ch == ' ' || ch == CR || ch == LF || ch == '>') {
+
+                c = s->cmd_start;
+
+                s->command = 0;
+
+                switch (p - c) {
+                    case 6:
+                        if (c[0] == 's'
+                            && c[1] == 't'
+                            && c[2] == 'r'
+                            && c[3] == 'e'
+                            && c[4] == 'a'
+                            && c[5] == 'm')
+                        {
+                            s->command = NGX_XMPP_STREAM;
+                        }
+                        break;
+
+                    case 8:
+#if (NGX_MAIL_SSL)
+                        if (c[0] == 's'
+                            && c[1] == 't'
+                            && c[2] == 'a'
+                            && c[3] == 'r'
+                            && c[4] == 't'
+                            && c[5] == 't'
+                            && c[6] == 'l'
+                            && c[7] == 's')
+                        {
+                            s->command = NGX_XMPP_STARTTLS;
+                        }
+#endif
+
+                        if (c[0] == 'r'
+                            && c[1] == 'e'
+                            && c[2] == 's'
+                            && c[3] == 'p'
+                            && c[4] == 'o'
+                            && c[5] == 'n'
+                            && c[6] == 's'
+                            && c[7] == 'e')
+                        {
+                            s->command = NGX_XMPP_AUTH;
+                        }
+
+                        break;
+
+                    case 4:
+                        if (c[0] == 'a'
+                            && c[1] == 'u'
+                            && c[2] == 't'
+                            && c[3] == 'h')
+                        {
+                            s->command = NGX_XMPP_AUTH;
+                        }
+                        break;
+
+                }
+
+                switch (ch) {
+                case ' ': case CR: case LF:
+                    state = sw_whitspace_between_attrs;
+                    break;
+                case '>':
+                    if (s->command == NGX_XMPP_AUTH && !s->literal_len) {
+                        state = sw_cdata_start;
+                        break;
+                    }
+                    state = sw_start;
+                    if (s->command) {
+                        goto done;
+                    }
+                    break;
+                }
+            }
+
+            break;
+
+        case sw_whitspace_between_attrs:
+            switch (ch) {
+            case ' ': case CR: case LF:
+                break;
+            case '/': case '?':
+                s->literal_len = 1; // reusing as self-close flag
+                break;
+            case '>':
+                if (s->command == NGX_XMPP_AUTH && !s->literal_len) {
+                    state = sw_cdata_start;
+                    break;
+                }
+                state = sw_start;
+                if (s->command) {
+                    goto done;
+                }
+                break;
+            default:
+                s->arg_start = p;
+                state = sw_attr_name;
+                break;
+            }
+            break;
+
+        case sw_attr_name:
+            if (ch == '=') {
+                s->arg_end = p;
+                state = sw_attr_value_quote_start;
+            }
+            break;
+
+        case sw_attr_value_quote_start:
+            switch (ch) {
+            case '"': case '\'':
+                s->cmd_start = p; // reusing to remember quote type
+                state = sw_attr_value;
+                break;
+            default:
+                goto invalid;
+            }
+            break;
+
+        case sw_attr_value:
+            if (ch != s->cmd_start[0])
+                break;
+
+            c = s->arg_start;
+            if (s->command == NGX_XMPP_STREAM) {
+                if (s->arg_end - c == 2
+                    && c[0] == 't' && c[1] == 'o') {
+
+                    arg = ngx_array_push(&s->args);
+                    if (arg == NULL) {
+                        return NGX_ERROR;
+                    }
+                    arg->len = p - s->arg_end - 2;
+                    arg->data = s->arg_end + 2;
+                }
+            }
+            else if (s->command == NGX_XMPP_AUTH) {
+                if (s->arg_end - c == 9
+                    && c[0] == 'm'
+                    && c[1] == 'e'
+                    && c[2] == 'c'
+                    && c[3] == 'h'
+                    && c[4] == 'a'
+                    && c[5] == 'n'
+                    && c[6] == 'i'
+                    && c[7] == 's'
+                    && c[8] == 'm') {
+
+                    arg = ngx_array_push(&s->args);
+                    if (arg == NULL) {
+                        return NGX_ERROR;
+                    }
+                    arg->len = p - s->arg_end - 2;
+                    arg->data = s->arg_end + 2;
+                }
+            }
+
+            state = sw_whitspace_between_attrs;
+            break;
+
+        case sw_cdata_start:
+            switch (ch) {
+            case '<':
+                state = sw_start;
+                goto done;
+            default:
+                s->arg_start = p;
+                state = sw_cdata;
+                break;
+            }
+            break;
+
+        case sw_cdata:
+            switch (ch) {
+            case '<':
+                if (p - s->arg_start == 0) {
+                    state = sw_start;
+                    goto done;
+                }
+
+                arg = ngx_array_push(&s->args);
+                if (arg == NULL) {
+                    return NGX_ERROR;
+                }
+
+                arg->len = p - s->arg_start;
+                arg->data = s->arg_start;
+
+                state = sw_start;
+                goto done;
+            }
+            break;
+
+        }
+    }
+
+    s->buffer->pos = p;
+    s->state = state;
+
+    return NGX_AGAIN;
+
+done:
+
+    s->buffer->pos = p + 1;
+    s->state = sw_start;
+
+    return NGX_OK;
+
+invalid:
+
+    s->state = sw_start;
 
     return NGX_MAIL_PARSE_INVALID_COMMAND;
 }
