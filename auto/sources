@@ -534,6 +534,11 @@ MAIL_SMTP_DEPS="src/mail/ngx_mail_smtp_module.h"
 MAIL_SMTP_SRCS="src/mail/ngx_mail_smtp_module.c \
                 src/mail/ngx_mail_smtp_handler.c"
 
+MAIL_XMPP_MODULE="ngx_mail_xmpp_module"
+MAIL_XMPP_DEPS="src/mail/ngx_mail_xmpp_module.h"
+MAIL_XMPP_SRCS="src/mail/ngx_mail_xmpp_module.c \
+                src/mail/ngx_mail_xmpp_handler.c"
+
 MAIL_SSL_MODULE="ngx_mail_ssl_module"
 MAIL_SSL_DEPS="src/mail/ngx_mail_ssl_module.h"
 MAIL_SSL_SRCS="src/mail/ngx_mail_ssl_module.c"

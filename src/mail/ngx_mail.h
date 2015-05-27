@@ -120,6 +120,7 @@ typedef struct {
 #define NGX_MAIL_POP3_PROTOCOL  0
 #define NGX_MAIL_IMAP_PROTOCOL  1
 #define NGX_MAIL_SMTP_PROTOCOL  2
+#define NGX_MAIL_XMPP_PROTOCOL  3
 
 
 typedef struct ngx_mail_protocol_s  ngx_mail_protocol_t;
@@ -182,6 +183,15 @@ typedef enum {
     ngx_smtp_from,
     ngx_smtp_to
 } ngx_smtp_state_e;
+
+
+typedef enum {
+    ngx_xmpp_start = 0,
+    ngx_xmpp_stream,
+    ngx_xmpp_auth_login_username,
+    ngx_xmpp_auth_login_password,
+    ngx_xmpp_auth_plain,
+} ngx_xmpp_state_e;
 
 
 typedef struct {
@@ -297,6 +307,11 @@ typedef struct {
 #define NGX_SMTP_EXPN          11
 #define NGX_SMTP_HELP          12
 #define NGX_SMTP_STARTTLS      13
+
+
+#define NGX_XMPP_STREAM        1
+#define NGX_XMPP_STARTTLS      2
+#define NGX_XMPP_AUTH          3
 
 
 #define NGX_MAIL_AUTH_PLAIN             0
