@@ -458,6 +458,14 @@ done:
 }
 
 
+static u_char xmpp_auth_failure_start[] =
+    "<failure xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\">"
+    "<not-authorized/>"
+    "<text>";
+static u_char xmpp_auth_failure_end[] =
+    "</text>"
+    "</failure>";
+
 static void
 ngx_mail_auth_http_process_headers(ngx_mail_session_t *s,
     ngx_mail_auth_http_ctx_t *ctx)
@@ -536,6 +544,11 @@ ngx_mail_auth_http_process_headers(ngx_mail_session_t *s,
                            + sizeof(CRLF) - 1;
                     break;
 
+                case NGX_MAIL_XMPP_PROTOCOL:
+                    size = sizeof(xmpp_auth_failure_start) - 1 + len
+                           + sizeof(xmpp_auth_failure_end) - 1;
+                    break;
+
                 default: /* NGX_MAIL_SMTP_PROTOCOL */
                     ctx->err = ctx->errmsg;
                     continue;
@@ -562,12 +575,25 @@ ngx_mail_auth_http_process_headers(ngx_mail_session_t *s,
                     *p++ = 'N'; *p++ = 'O'; *p++ = ' ';
                     break;
 
+                case NGX_MAIL_XMPP_PROTOCOL:
+                    p = ngx_cpymem(p, xmpp_auth_failure_start, sizeof(xmpp_auth_failure_start) - 1);
+                    break;
+
                 default: /* NGX_MAIL_SMTP_PROTOCOL */
                     break;
                 }
 
                 p = ngx_cpymem(p, ctx->header_start, len);
-                *p++ = CR; *p++ = LF;
+
+                switch (s->protocol) {
+                case NGX_MAIL_XMPP_PROTOCOL:
+                    p = ngx_cpymem(p, xmpp_auth_failure_end, sizeof(xmpp_auth_failure_end) - 1);
+                    break;
+
+                default:
+                    *p++ = CR; *p++ = LF;
+                    break;
+                }
 
                 ctx->err.len = p - ctx->err.data;
 
