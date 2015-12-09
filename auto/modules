@@ -507,6 +507,12 @@ if [ $MAIL = YES ]; then
         MAIL_SRCS="$MAIL_SRCS $MAIL_SMTP_SRCS"
     fi
 
+    if [ $MAIL_XMPP = YES ]; then
+        modules="$modules $MAIL_XMPP_MODULE"
+        MAIL_DEPS="$MAIL_DEPS $MAIL_XMPP_DEPS"
+        MAIL_SRCS="$MAIL_SRCS $MAIL_XMPP_SRCS"
+    fi
+
     modules="$modules $MAIL_AUTH_HTTP_MODULE"
     MAIL_SRCS="$MAIL_SRCS $MAIL_AUTH_HTTP_SRCS"
 
