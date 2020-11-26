@@ -1137,7 +1137,7 @@ ngx_mail_auth_http_create_request(ngx_mail_session_t *s, ngx_pool_t *pool,
     ngx_str_t                  login, passwd;
 #if (NGX_MAIL_SSL)
     ngx_str_t                  verify, subject, issuer, serial, fingerprint,
-                               raw_cert, cert;
+                               raw_cert, cert, cipher;
     ngx_connection_t          *c;
     ngx_mail_ssl_conf_t       *sslcf;
 #endif
@@ -1155,6 +1155,14 @@ ngx_mail_auth_http_create_request(ngx_mail_session_t *s, ngx_pool_t *pool,
 
     c = s->connection;
     sslcf = ngx_mail_get_module_srv_conf(s, ngx_mail_ssl_module);
+
+    if (c->ssl) {
+        if (ngx_ssl_get_cipher_name(c, pool, &cipher) != NGX_OK) {
+            return NULL;
+        }
+    } else {
+        ngx_str_null(&cipher);
+    }
 
     if (c->ssl && sslcf->verify) {
 
@@ -1229,6 +1237,7 @@ ngx_mail_auth_http_create_request(ngx_mail_session_t *s, ngx_pool_t *pool,
           + sizeof("Auth-SMTP-To: ") - 1 + s->smtp_to.len + sizeof(CRLF) - 1
 #if (NGX_MAIL_SSL)
           + sizeof("Auth-SSL: on" CRLF) - 1
+          + sizeof("Auth-SSL-Cipher: ") - 1 + cipher.len + sizeof(CRLF) - 1
           + sizeof("Auth-SSL-Verify: ") - 1 + verify.len + sizeof(CRLF) - 1
           + sizeof("Auth-SSL-Subject: ") - 1 + subject.len + sizeof(CRLF) - 1
           + sizeof("Auth-SSL-Issuer: ") - 1 + issuer.len + sizeof(CRLF) - 1
@@ -1324,6 +1333,13 @@ ngx_mail_auth_http_create_request(ngx_mail_session_t *s, ngx_pool_t *pool,
     if (c->ssl) {
         b->last = ngx_cpymem(b->last, "Auth-SSL: on" CRLF,
                              sizeof("Auth-SSL: on" CRLF) - 1);
+
+        if (cipher.len) {
+            b->last = ngx_cpymem(b->last, "Auth-SSL-Cipher: ",
+                                 sizeof("Auth-SSL-Cipher: ") - 1);
+            b->last = ngx_copy(b->last, cipher.data, cipher.len);
+            *b->last++ = CR; *b->last++ = LF;
+        }
 
         if (verify.len) {
             b->last = ngx_cpymem(b->last, "Auth-SSL-Verify: ",
