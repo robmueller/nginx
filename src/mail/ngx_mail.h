@@ -40,6 +40,7 @@ typedef struct {
 #if (NGX_HAVE_INET6)
     unsigned                ipv6only:1;
 #endif
+    unsigned                reuseport:1;
     unsigned                so_keepalive:2;
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
     int                     tcp_keepidle;
